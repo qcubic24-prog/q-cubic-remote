@@ -6,8 +6,9 @@
 <meta name="theme-color" content="#0B1220">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Q-CUBIC Remote</title>
+<title>Q-OS</title>
 <link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="qos.css">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <!-- Q-CUBIC Remote - phone app. Copyright (c) 2026 Pruthvi. All rights reserved. -->
@@ -69,18 +70,19 @@
 <body>
 
 <section class="page show" id="home">
-  <h1>Q-CUBIC <span>Remote</span></h1>
+  <h1>Q-<span>OS</span></h1>
+  <p>Your PC, shaped like a phone. Everything runs on your PC; this phone only shows it.</p>
   <h2>My PCs</h2>
   <div id="pcList"></div>
   <p id="emptyHint" class="info">No PC saved yet. Add your PC once with its ID and pairing code.</p>
   <button class="primary" id="addBtn">Add a PC</button>
   <div class="msg" id="homeMsg" role="status"></div>
-  <p class="info">Mouse mode: slide one finger to move the pointer, tap to click, hold then slide to drag. Two fingers: pinch to zoom, slide to scroll or move around, tap for right click.</p>
+  <p class="info">In apps: tap to click, slide to scroll, hold for right click, pinch to zoom. Hold the back button for recent apps. Pull down from the top for quick settings.</p>
 </section>
 
 <section class="page" id="add">
   <h1>Add a <span>PC</span></h1>
-  <p>Open Q-CUBIC Remote on your PC. Type the ID and pairing code it shows.</p>
+  <p>Open Q-OS (Q-CUBIC Remote) on your PC. Type the ID and pairing code it shows.</p>
   <div><label for="pcId">PC ID</label><input class="field" id="pcId" inputmode="numeric" maxlength="11" placeholder="123 456 789" autocomplete="off"></div>
   <div><label for="pcCode">Pairing code</label><input class="field" id="pcCode" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code"></div>
   <div><label for="pcName">Name (optional)</label><input class="field small" id="pcName" maxlength="30" placeholder="Home PC" autocomplete="off"></div>
@@ -119,7 +121,7 @@
         <button data-combo="Control,c">Copy</button><button data-combo="Control,v">Paste</button><button data-combo="Control,z">Undo</button><button data-combo="Control,a">Select all</button>
         <button data-combo="Alt,Tab">Switch app</button><button data-combo="Win,d">Desktop</button>
       </div>
-      <div class="row"><button id="fsBtn">Full screen</button><button id="endBtn" class="danger">Disconnect</button><button id="closeMenu">Close</button></div>
+      <div class="row"><button id="fsBtn">Full screen</button><button id="backQos">Back to Q-OS</button><button id="endBtn" class="danger">Disconnect</button><button id="closeMenu">Close</button></div>
     </div>
     <div id="zoomTag"></div>
     <div id="toast"></div>
@@ -127,7 +129,65 @@
   <input id="kb" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
 </section>
 
+
+<section id="qos" aria-label="Q-OS">
+  <div id="qsb" role="button" aria-label="Open quick settings">
+    <span id="qsbWifi"></span><span class="grow" id="qsbName">PC</span><span id="qsbBat"></span><span id="qsbTime"></span>
+  </div>
+
+  <div class="scr full" id="qlock" aria-label="Lock screen">
+    <div class="time" id="qlTime">--:--</div>
+    <div class="date" id="qlDate"></div>
+    <div class="card" id="qlCard"></div>
+    <div class="hello"><div id="qlHello">Hello</div><div class="hint">Swipe up or tap to open</div></div>
+  </div>
+
+  <div class="scr" id="qstart" aria-label="Start">
+    <div id="qtiles"></div>
+    <button id="qallBtn">All apps <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M10 8l4 4-4 4"/></svg></button>
+  </div>
+
+  <div class="scr" id="qapps" aria-label="All apps">
+    <div class="search"><input id="qsearch" type="search" placeholder="Search apps on your PC" autocomplete="off"></div>
+    <div id="qappList"></div>
+  </div>
+
+  <div class="scr" id="qset" aria-label="Settings">
+    <h1>System</h1>
+    <div class="pcard"><div class="pc" id="qsPcImg"></div><div class="grow"><div class="n" id="qsName">PC</div><div class="m" id="qsModel"></div><button class="rn" data-set="about">Rename</button></div><div class="av" id="qsAv">?</div></div>
+    <div id="qsetList"></div>
+  </div>
+
+  <div class="scr full" id="qappv" aria-label="App">
+    <video id="qvideo" autoplay playsinline muted></video>
+    <div class="wait" id="qwait"><div class="spin"></div><div id="qwaitText">Opening on your PC...</div></div>
+    <input id="qkb" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+  </div>
+
+  <div class="scr full" id="qrec" aria-label="Recent apps">
+    <h2>Open on your PC</h2>
+    <div id="qrecList"></div>
+  </div>
+
+  <div id="qac" aria-label="Quick settings">
+    <div class="qgrid" id="qacGrid"></div>
+    <div class="slider" id="qVolRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4V5zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg><input type="range" id="qVol" min="0" max="100" step="2" aria-label="PC volume"><span id="qVolV"></span></div>
+    <div class="slider" id="qBriRow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4V2M12 22v-2M4 12H2M22 12h-2M5.6 5.6L4.2 4.2M19.8 19.8l-1.4-1.4M5.6 18.4l-1.4 1.4M19.8 4.2l-1.4 1.4M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z"/></svg><input type="range" id="qBri" min="0" max="100" step="5" aria-label="PC screen brightness"><span id="qBriV"></span></div>
+    <h3>Your PC</h3>
+    <div id="qacStats"></div>
+    <div class="grab"></div>
+  </div>
+
+  <nav id="qnav">
+    <button id="qnBack" aria-label="Back (hold for recent apps)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
+    <button id="qnStart" aria-label="Start"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5l7-1v7H3zM11 4.3L21 3v8.5H11zM3 12.5h7v7l-7-1zM11 12.5h10V21l-10-1.3z"/></svg></button>
+    <button id="qnThird" aria-label="Search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4"/></svg></button>
+  </nav>
+  <div id="qtoast" role="status"></div>
+</section>
+
 <script src="qcr-net.js"></script>
 <script src="app.js"></script>
+<script src="qos.js"></script>
 </body>
 </html>
