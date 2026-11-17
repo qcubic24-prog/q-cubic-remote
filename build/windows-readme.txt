@@ -1,4 +1,4 @@
-Q-CUBIC Remote - control your home PC from your phone, from any network
+Q-OS for PC (Q-CUBIC Remote) - use your home PC from your phone, shaped like a phone, from any network
 Copyright (c) 2026 Pruthvi. All rights reserved.
 
 ON YOUR PC
@@ -10,15 +10,17 @@ ON YOUR PC
 
 ON YOUR PHONE (first time only)
 1. Install the Android app q-cubic-remote-android.apk from the Releases page,
-   or open Chrome and go to https://saipruthvi356.github.io/q-cubic-remote/
+   or open Chrome and go to https://qcubic24-prog.github.io/q-cubic-remote/
 2. Open it, tap "Add a PC", type the PC ID and the pairing code, tap "Connect and save".
 
 EVERY TIME AFTER THAT
 Open the Q-CUBIC app on your phone and tap "Connect" next to your PC. Works on Wi-Fi or mobile data, anywhere.
 
-CONTROLS
-Tap = click. Hold = right click. Drag = drag. Two fingers up/down = scroll.
-Bottom bar: Keyboard, Quality (Fast / Balanced / Sharp), Enter, Delete, Esc, Win, arrows.
+ON THE PHONE (Q-OS)
+Swipe up on the lock screen. Tap any app tile: it opens on this PC, shaped like your phone, and shows on the phone.
+In an app: tap = click, slide up/down = scroll, slide sideways = drag, hold = right click, pinch = zoom.
+Back = return to Start (the app stays open on the PC). Hold Back = recent apps. Tap the top bar = quick settings.
+The "PC desktop" tile shows the whole PC screen with mouse controls, like before.
 
 PRIVACY
 The screen goes straight from your PC to your phone, encrypted. Messages that help the two find each other
