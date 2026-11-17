@@ -8,10 +8,13 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const input = require('./input');
+const qos = require('./qos');
 
 let win = null;
 let tray = null;
 let quitting = false;
+// What the phone is looking at: null = nothing, 'screen' = the whole PC screen, or one app window.
+let target = null;     // { kind: 'screen' } | { kind: 'window', sourceId, hwnd }
 const startHidden = process.argv.includes('--hidden');
 
 if (!app.requestSingleInstanceLock()) {
@@ -91,13 +94,55 @@ function createTray() {
 app.whenReady().then(() => {
   config = loadConfig();
 
-  // Let the host window capture the whole primary screen without a picker.
+  // The host window captures exactly what the phone asked for, without a picker:
+  // one app window (Q-OS app view) or the whole screen (classic remote desktop).
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-      const primaryId = String(screen.getPrimaryDisplay().id);
-      const src = sources.find((s) => s.display_id === primaryId) || sources[0];
-      callback({ video: src });
+    const types = target && target.kind === 'window' ? ['window'] : ['screen'];
+    desktopCapturer.getSources({ types, thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
+      let src = null;
+      if (target && target.kind === 'window') src = sources.find((s) => s.id === target.sourceId);
+      if (!src) {
+        const primaryId = String(screen.getPrimaryDisplay().id);
+        src = sources.find((s) => s.display_id === primaryId) || sources[0];
+      }
+      callback(src ? { video: src } : {});
     }).catch(() => callback({}));
+  });
+
+  // Requests from the phone's Q-OS interface. Every request is checked here.
+  ipcMain.handle('qos', async (_e, op, args) => {
+    args = args && typeof args === 'object' ? args : {};
+    const useWindow = (src) => {
+      if (!src) return { ok: false };
+      target = { kind: 'window', sourceId: src.id, hwnd: qos.hwndOf(src.id) };
+      qos.phoneShape(target.hwnd, args.aspect);
+      return { ok: true, source: src.id, name: src.name };
+    };
+    switch (op) {
+      case 'info': return qos.pcInfo();
+      case 'wallpaper': return qos.wallpaper();
+      case 'apps': return qos.listApps();
+      case 'windows': return qos.openWindows();
+      case 'openApp': return useWindow(await qos.openApp(String(args.id || '')));
+      case 'openSettings': return useWindow(await qos.openSettings(String(args.page || '')));
+      case 'openWindow': {
+        const all = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
+        return useWindow(all.find((s) => s.id === String(args.id || '')));
+      }
+      case 'reshape': if (target && target.kind === 'window') qos.phoneShape(target.hwnd, args.aspect); return { ok: true };
+      case 'closeWindow': {
+        const hwnd = qos.hwndOf(String(args.id || (target && target.sourceId) || ''));
+        if (hwnd) qos.closeWindow(hwnd);
+        if (target && target.hwnd === hwnd) target = null;
+        return { ok: true };
+      }
+      case 'desktop': target = { kind: 'screen' }; return { ok: true };
+      case 'home': target = null; return { ok: true };
+      case 'volume': await qos.setVolume(args.value); return { ok: true };
+      case 'mute': qos.toggleMute(); return { ok: true };
+      case 'brightness': await qos.setBrightness(args.value); return { ok: true };
+      default: return { ok: false };
+    }
   });
 
   ipcMain.handle('info', () => ({
@@ -117,6 +162,14 @@ app.whenReady().then(() => {
   ipcMain.handle('clear-trusted', () => { config.trusted = []; saveConfig(config); return true; });
   ipcMain.on('log', (_e, text) => { if (process.env.QCR_DEBUG) console.log('[host]', text); });
   ipcMain.on('input', (_e, ev) => {
+    if (target && target.kind === 'window') {
+      // Taps land inside the app window the phone is showing (Windows pixels, no extra scaling).
+      const r = qos.frameRect(target.hwnd);
+      if (!r) return;
+      if (ev && (ev.t === 'down' || ev.t === 'click' || ev.t === 'dbl')) qos.ensureFront(target.hwnd);
+      input.handle(ev, r, 1);
+      return;
+    }
     const d = screen.getPrimaryDisplay();
     input.handle(ev, d.bounds, d.scaleFactor);
   });
