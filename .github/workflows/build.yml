@@ -91,7 +91,7 @@ jobs:
           set -e
           npm init -y > /dev/null
           npm install --no-audit --no-fund @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
-          npx cap init "Q-CUBIC Remote" com.qcubic.remote --web-dir www
+          npx cap init "Q-OS" com.qcubic.remote --web-dir www
           npx cap add android
           # Our icon on the home screen
           for d in android/app/src/main/res/mipmap-*; do
@@ -123,6 +123,6 @@ jobs:
         run: |
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest out/QCubicRemote-windows.zip out/q-cubic-remote-android.apk \
-            --title "Q-CUBIC Remote (latest)" \
-            --notes "Windows: download QCubicRemote-windows.zip, unzip, run Q-CUBIC Remote.exe. Phone: install q-cubic-remote-android.apk, or open https://saipruthvi356.github.io/q-cubic-remote/ in Chrome." \
+            --title "Q-OS + Q-CUBIC Remote (latest)" \
+            --notes "Windows: download QCubicRemote-windows.zip, unzip, run Q-CUBIC Remote.exe. Phone: install q-cubic-remote-android.apk, or open https://${{ github.repository_owner }}.github.io/q-cubic-remote/ in Chrome." \
             --target "${{ github.sha }}"
