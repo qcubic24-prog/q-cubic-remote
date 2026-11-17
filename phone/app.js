@@ -50,6 +50,7 @@ function renderPcs() {
 function show(page) {
   ['home', 'add'].forEach((p) => $(p).classList.toggle('show', p === page));
   $('view').style.display = page === 'view' ? 'flex' : 'none';
+  if (page === 'home' || page === 'add') $('qos').classList.remove('on');
 }
 
 // ---------- add a PC ----------
@@ -125,7 +126,9 @@ async function answer(sdp, relay, tp, sid, key, kid, target, msgEl) {
   if (pc) { try { pc.close(); } catch (e) {} }
   pc = new RTCPeerConnection({ iceServers: N.ICE_SERVERS });
   pc.ontrack = (e) => {
-    $('video').srcObject = e.streams[0] || new MediaStream([e.track]);
+    const stream = e.streams[0] || new MediaStream([e.track]);
+    $('video').srcObject = stream;
+    $('qvideo').srcObject = stream;
     lowLatency();
   };
   pc.ondatachannel = (e) => {
@@ -133,6 +136,7 @@ async function answer(sdp, relay, tp, sid, key, kid, target, msgEl) {
     channel.onopen = () => sendQuality();
     channel.onmessage = (m) => {
       let d; try { d = JSON.parse(m.data); } catch (x) { return; }
+      if (window.QOS && (d.t === 'res' || d.t === 'part' || d.t === 'ev')) { window.QOS.onMessage(d); return; }
       if (d.t === 'trust' && typeof d.secret === 'string' && N.cleanId(d.deviceId) === target.id) {
         const list = loadPcs().filter((p) => p.id !== target.id);
         list.unshift({ id: target.id, name: target.name || d.name || 'My PC', secret: d.secret });
@@ -144,7 +148,7 @@ async function answer(sdp, relay, tp, sid, key, kid, target, msgEl) {
   pc.onconnectionstatechange = () => {
     if (!pc) return;
     const s = pc.connectionState;
-    if (s === 'connected') { closeRelays(); msgEl.textContent = ''; enterView(); }
+    if (s === 'connected') { closeRelays(); msgEl.textContent = ''; show('none'); window.QOS.enter(target); }
     if (s === 'failed') { endView(); fail(msgEl, 'Could not reach your PC on this network. Try Wi-Fi or mobile data instead.'); show(pairingPage(target)); }
     if (s === 'disconnected') toast('Connection unstable...');
   };
@@ -168,10 +172,13 @@ function lowLatency() {
 }
 
 function endView() {
+  if (window.QOS) window.QOS.leave();
   if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   channel = null;
   closeRelays();
-  renderPcs();
+  // Shared with the Q-OS interface (qos.js)
+window.QCR = { send, enterView, endView, toast, channelOpen: () => !!(channel && channel.readyState === 'open') };
+renderPcs();
   show('home');
 }
 
@@ -489,6 +496,7 @@ document.querySelectorAll('#menu [data-key]').forEach((b) => { b.onclick = () =>
 document.querySelectorAll('#menu [data-combo]').forEach((b) => { b.onclick = () => send({ t: 'combo', keys: b.dataset.combo.split(',') }); });
 $('fsBtn').onclick = () => { const el = document.documentElement; (document.fullscreenElement ? document.exitFullscreen() : el.requestFullscreen()).catch(() => toast('Full screen not available here')); };
 $('endBtn').onclick = () => { $('menu').classList.remove('open'); endView(); };
+$('backQos').onclick = () => { $('menu').classList.remove('open'); $('view').style.display = 'none'; window.QOS.fromDesktop(); };
 
 function enterView() {
   show('view');
@@ -502,4 +510,6 @@ function enterView() {
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
+// Shared with the Q-OS interface (qos.js)
+window.QCR = { send, enterView, endView, toast, channelOpen: () => !!(channel && channel.readyState === 'open') };
 renderPcs();
