@@ -46,7 +46,7 @@ function stopSession() {
 }
 
 async function applyQuality(name) {
-  if (!session || !session.sender) return;
+  if (!session || !session.sender || !session.track) return;
   const q = QUALITY[name] || QUALITY.balanced;
   try { session.track.contentHint = q.hint; } catch (e) {}
   const s = session.track.getSettings();
@@ -77,24 +77,67 @@ async function send(relay, sid, key, obj) {
   relay.publish(topics.outbox(sid), JSON.stringify(env));
 }
 
+// Capture what main.js has chosen (one app window or the whole screen) and send it to the phone.
+async function showTarget(s) {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 60, max: 60 } }, audio: false });
+  } catch (e) { log('capture failed ' + e.message); return false; }
+  if (session !== s) { stream.getTracks().forEach((t) => t.stop()); return false; }
+  const old = s.stream;
+  s.stream = stream;
+  s.track = stream.getVideoTracks()[0];
+  s.track.contentHint = 'detail';
+  s.track.onended = () => { if (session === s && s.track && s.track.readyState === 'ended') reply(s, { t: 'ev', e: 'closed' }); };
+  await s.sender.replaceTrack(s.track);
+  if (old) old.getTracks().forEach((t) => t.stop());
+  applyQuality(s.quality || 'balanced');
+  return true;
+}
+
+async function hideTarget(s) {
+  if (s.stream) s.stream.getTracks().forEach((t) => t.stop());
+  s.stream = null; s.track = null;
+  try { await s.sender.replaceTrack(null); } catch (e) {}
+}
+
+// Big answers (app icons, wallpaper) are split so they fit through the data channel.
+const CHUNK = 48000;
+function reply(s, obj) {
+  if (!s.channel || s.channel.readyState !== 'open') return;
+  const text = JSON.stringify(obj);
+  if (text.length <= CHUNK) { s.channel.send(text); return; }
+  const n = Math.ceil(text.length / CHUNK);
+  for (let i = 0; i < n; i++) s.channel.send(JSON.stringify({ t: 'part', id: obj.id, i, n, s: text.slice(i * CHUNK, (i + 1) * CHUNK) }));
+}
+
+const SHOW_OPS = new Set(['openApp', 'openSettings', 'openWindow', 'desktop']);
+async function onRequest(s, ev) {
+  const op = String(ev.op || '');
+  let data = null;
+  try {
+    data = await window.qcr.qos(op, ev.args || {});
+    if (SHOW_OPS.has(op) && data && data.ok) data.ok = await showTarget(s);
+    if (op === 'home' || op === 'closeWindow') await hideTarget(s);
+  } catch (e) { data = { ok: false, error: e.message }; }
+  reply(s, { t: 'res', id: ev.id, data });
+}
+
 async function startSession(sid, key, relay, hello, pairing) {
   stopSession();
   const s = { sid, key, relay, pairing, phoneName: String(hello.name || 'Phone').slice(0, 40) };
   session = s;
-  setStatus('Phone found. Starting screen...', true);
-  try {
-    s.stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 60, max: 60 } }, audio: false });
-  } catch (e) { setStatus('Could not capture the screen: ' + e.message, false); session = null; return; }
-  s.track = s.stream.getVideoTracks()[0];
-  s.track.contentHint = 'detail';
+  setStatus('Phone found. Connecting...', true);
 
   const pc = new RTCPeerConnection({ iceServers: N.ICE_SERVERS });
   s.pc = pc;
-  const tr = pc.addTransceiver(s.track, { direction: 'sendonly', streams: [s.stream] });
+  // The video starts empty; the phone chooses an app (or the whole screen) after connecting.
+  const tr = pc.addTransceiver('video', { direction: 'sendonly' });
   s.sender = tr.sender;
   preferH264(tr);
 
   const ch = pc.createDataChannel('input', { ordered: true });
+  s.channel = ch;
   ch.onopen = async () => {
     if (!s.pairing) return;
     const secret = N.newSecret();
@@ -108,6 +151,7 @@ async function startSession(sid, key, relay, hello, pairing) {
   ch.onmessage = (m) => {
     let ev; try { ev = JSON.parse(m.data); } catch (e) { return; }
     if (ev.t === 'quality') { s.quality = ev.v; applyQuality(ev.v); return; }
+    if (ev.t === 'q') { onRequest(s, ev); return; }
     window.qcr.sendInput(ev);
   };
 
@@ -115,6 +159,7 @@ async function startSession(sid, key, relay, hello, pairing) {
     if (session !== s) return;
     const st = pc.connectionState;
     if (st === 'connected') { setStatus('Connected to ' + s.phoneName + '.', true); applyQuality(s.quality || 'balanced'); }
+    if (st === 'failed' || st === 'closed') window.qcr.qos('home');
     if (st === 'failed') { setStatus('Could not connect to the phone on this network.', false); stopSession(); }
     if (st === 'disconnected' || st === 'closed') { setStatus('Phone disconnected. Waiting...', false); }
   };
