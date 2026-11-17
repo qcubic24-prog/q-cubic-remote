@@ -1,6 +1,6 @@
-// Q-CUBIC Remote - offline shell for the phone app. Copyright (c) 2026 Pruthvi. All rights reserved.
-const CACHE = 'qcr-v2';
-const FILES = ['./', 'index.html', 'app.js', 'qcr-net.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+// Q-CUBIC Remote - offline shell for the phone app (Q-OS). Copyright (c) 2026 Pruthvi. All rights reserved.
+const CACHE = 'qcr-v3';
+const FILES = ['./', 'index.html', 'app.js', 'qos.js', 'qos.css', 'qcr-net.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))));
