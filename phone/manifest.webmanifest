@@ -1,7 +1,7 @@
 {
-  "name": "Q-CUBIC Remote",
-  "short_name": "Q-CUBIC",
-  "description": "Control your home PC from your phone, from anywhere.",
+  "name": "Q-OS by Q-CUBIC",
+  "short_name": "Q-OS",
+  "description": "Your home PC, shaped like a phone. Use every PC app from anywhere.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
