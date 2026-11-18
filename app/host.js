@@ -77,25 +77,76 @@ async function send(relay, sid, key, obj) {
   relay.publish(topics.outbox(sid), JSON.stringify(env));
 }
 
-// Capture what main.js has chosen (one app window or the whole screen) and send it to the phone.
-async function showTarget(s) {
+// Capture the PC screen and send it to the phone. For one app (crop = true), only the app window's
+// area of the screen is sent, so the phone gets the app in its own (portrait) shape.
+async function showTarget(s, crop) {
   let stream;
   try {
     stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 60, max: 60 } }, audio: false });
   } catch (e) { log('capture failed ' + e.message); return false; }
   if (session !== s) { stream.getTracks().forEach((t) => t.stop()); return false; }
-  const old = s.stream;
+  const old = s.stream, oldStop = s.stopCrop;
+  s.stopCrop = null;
+  const screenTrack = stream.getVideoTracks()[0];
+  screenTrack.contentHint = 'detail';
+  let track = screenTrack;
+  if (crop && typeof MediaStreamTrackProcessor === 'function') {
+    const c = cropPipeline(s, screenTrack);
+    track = c.track; s.stopCrop = c.stop;
+  }
   s.stream = stream;
-  s.track = stream.getVideoTracks()[0];
-  s.track.contentHint = 'detail';
-  s.track.onended = () => { if (session === s && s.track && s.track.readyState === 'ended') reply(s, { t: 'ev', e: 'closed' }); };
-  await s.sender.replaceTrack(s.track);
+  s.track = track;
+  track.contentHint = 'detail';
+  await s.sender.replaceTrack(track);
+  if (oldStop) oldStop();
   if (old) old.getTracks().forEach((t) => t.stop());
   applyQuality(s.quality || 'balanced');
   return true;
 }
 
+// Cut the app window's rectangle out of every screen frame (no copying of pixels).
+function cropPipeline(s, screenTrack) {
+  const st = { rect: null, alive: true, missing: 0 };
+  const poll = async () => {
+    if (!st.alive) return;
+    try {
+      const r = await window.qcr.qos('rect');
+      if (r && r.width > 20 && r.height > 20 && !r.minimized) { st.rect = r; st.missing = 0; }
+      else if (++st.missing === 6 && session === s) reply(s, { t: 'ev', e: 'closed' });
+    } catch (e) {}
+    if (st.alive) setTimeout(poll, 400);
+  };
+  poll();
+  const processor = new MediaStreamTrackProcessor({ track: screenTrack });
+  const generator = new MediaStreamTrackGenerator({ kind: 'video' });
+  const even = (n) => Math.max(0, Math.floor(n / 2) * 2);
+  const transformer = new TransformStream({
+    transform(frame, ctl) {
+      const r = st.rect;
+      if (!r) { frame.close(); return; }       // wait until the window position is known
+      const fw = frame.codedWidth, fh = frame.codedHeight;
+      const kx = fw / (r.sw || fw), ky = fh / (r.sh || fh);
+      let x = even((r.x - (r.sx || 0)) * kx), y = even((r.y - (r.sy || 0)) * ky);
+      let w = even(r.width * kx), h = even(r.height * ky);
+      if (x >= fw || y >= fh) { frame.close(); return; }
+      w = Math.min(w, even(fw - x)); h = Math.min(h, even(fh - y));
+      if (w < 16 || h < 16) { frame.close(); return; }
+      let out;
+      try { out = new VideoFrame(frame, { visibleRect: { x, y, width: w, height: h }, displayWidth: w, displayHeight: h }); }
+      catch (e) { out = null; }
+      frame.close();
+      if (out) ctl.enqueue(out);
+    },
+  });
+  processor.readable.pipeThrough(transformer).pipeTo(generator.writable).catch(() => {});
+  return {
+    track: generator,
+    stop: () => { st.alive = false; try { generator.stop(); } catch (e) {} },
+  };
+}
+
 async function hideTarget(s) {
+  if (s.stopCrop) { s.stopCrop(); s.stopCrop = null; }
   if (s.stream) s.stream.getTracks().forEach((t) => t.stop());
   s.stream = null; s.track = null;
   try { await s.sender.replaceTrack(null); } catch (e) {}
@@ -117,7 +168,7 @@ async function onRequest(s, ev) {
   let data = null;
   try {
     data = await window.qcr.qos(op, ev.args || {});
-    if (SHOW_OPS.has(op) && data && data.ok) data.ok = await showTarget(s);
+    if (SHOW_OPS.has(op) && data && data.ok) data.ok = await showTarget(s, !!data.crop);
     if (op === 'home' || op === 'closeWindow') await hideTarget(s);
   } catch (e) { data = { ok: false, error: e.message }; }
   reply(s, { t: 'res', id: ev.id, data });
