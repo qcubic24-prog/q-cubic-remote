@@ -26,6 +26,8 @@ if (isWin) {
     ShowWindow: user32.func('int __stdcall ShowWindow(intptr hWnd, int nCmdShow)'),
     IsWindow: user32.func('int __stdcall IsWindow(intptr hWnd)'),
     IsIconic: user32.func('int __stdcall IsIconic(intptr hWnd)'),
+    IsZoomed: user32.func('int __stdcall IsZoomed(intptr hWnd)'),
+    FindWindowW: user32.func('intptr __stdcall FindWindowW(const char16_t *cls, const char16_t *title)'),
     SetWindowPos: user32.func('int __stdcall SetWindowPos(intptr hWnd, intptr after, int X, int Y, int cx, int cy, uint32 flags)'),
     PostMessageW: user32.func('int __stdcall PostMessageW(intptr hWnd, uint32 msg, uintptr w, intptr l)'),
     GetWindowRect: user32.func('int __stdcall GetWindowRect(intptr hWnd, _Out_ QOS_RECT *rect)'),
@@ -59,7 +61,15 @@ async function psJson(script, timeoutMs) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const hwndOf = (sourceId) => { const m = /^window:(\d+):/.exec(String(sourceId || '')); return m ? Number(m[1]) : 0; };
+// A captured window's id looks like "window:<handle>:0". If that is not a live window, look it up by its title.
+function hwndOf(sourceId, title) {
+  const m = /^window:(\d+):/.exec(String(sourceId || ''));
+  const h = m ? Number(m[1]) : 0;
+  if (!w32) return h;
+  if (h && w32.IsWindow(h)) return h;
+  if (title) { const f = Number(w32.FindWindowW(null, String(title))); if (f) return f; }
+  return h;
+}
 
 // ---------- this PC ----------
 let infoCache = null, infoAt = 0;
@@ -160,22 +170,104 @@ function findShortcuts(dir, out, depth = 0) {
 
 const SKIP = /uninstall|readme|read me|help|documentation|website|release notes|license|manual|support|\bfaq\b/i;
 
-async function iconFor(file) {
+async function iconFor(file, size = 'large') {
   try {
-    const img = await app.getFileIcon(file, { size: 'large' });
+    const img = await app.getFileIcon(file, { size });
     if (img && !img.isEmpty()) return img.toDataURL();
   } catch (e) {}
   return null;
 }
 
+// Store apps keep their icon as an image file inside the app's folder.
+function imageFile(file) {
+  try {
+    let img = nativeImage.createFromPath(file);
+    if (img.isEmpty()) return null;
+    const s = img.getSize();
+    if (s.width > 96) img = img.resize({ width: 96, quality: 'good' });
+    return img.toDataURL();
+  } catch (e) { return null; }
+}
+
+// Windows "known folder" ids that appear at the start of many Start-menu app ids.
+function knownFolders() {
+  const e = process.env, win = e.windir || e.SystemRoot || 'C:\\Windows';
+  return {
+    '{6D809377-6AF0-444B-8957-A3773F02200E}': e.ProgramW6432 || e.ProgramFiles,
+    '{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}': e['ProgramFiles(x86)'],
+    '{905E63B6-C1BF-494E-B29C-65B732D3D21A}': e.ProgramFiles,
+    '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}': path.join(win, 'System32'),
+    '{D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27}': path.join(win, 'SysWOW64'),
+    '{F38BF404-1D43-42F2-9305-67DE0B28FC23}': win,
+    '{F7F1ED05-9F6D-47A2-AAAE-29D317C6F066}': e.CommonProgramFiles,
+    '{6365D5A7-0F0D-45E5-87F6-0DA56B6A4F7D}': e.CommonProgramW6432 || e.CommonProgramFiles,
+    '{5E6C858F-0E22-4760-9AFE-EA3317B67173}': e.USERPROFILE,
+    '{F1B32785-6FBA-4FCF-9D55-7B8E7F157091}': e.LOCALAPPDATA,
+    '{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}': e.APPDATA,
+    '{62AB5D82-FDC1-4DC3-A9DD-070D1D495D97}': e.ProgramData,
+  };
+}
+
+function exeFromAppId(id) {
+  let p = null;
+  const m = /^(\{[0-9A-Fa-f-]+\})\\(.+)$/.exec(id);
+  if (m) { const base = knownFolders()[m[1].toUpperCase()]; if (base) p = path.join(base, m[2]); }
+  else if (/^[a-z]:\\/i.test(id)) p = id;
+  return p && fs.existsSync(p) ? p : null;
+}
+
+// One PowerShell pass: every Start-menu app, plus the logo file of Store apps (from the app's manifest).
+const START_APPS_PS = [
+  "$ErrorActionPreference='SilentlyContinue'",
+  "$pk=@{}; Get-AppxPackage | ForEach-Object { $pk[$_.PackageFamilyName]=$_ }",
+  "$out = foreach($a in Get-StartApps){",
+  "  $logo=$null",
+  "  if($a.AppID -match '^([^!\\\\]+)!(.+)$'){",
+  "    $fam=$Matches[1]; $aid=$Matches[2]; $pkg=$pk[$fam]",
+  "    if($pkg){",
+  "      $man=Join-Path $pkg.InstallLocation 'AppxManifest.xml'",
+  "      if(Test-Path $man){",
+  "        [xml]$x=Get-Content $man -Raw",
+  "        $ap=@($x.Package.Applications.Application) | Where-Object { $_.Id -eq $aid } | Select-Object -First 1",
+  "        $ve=$ap.VisualElements; if(-not $ve){ $ve=$ap.ChildNodes | Where-Object { $_.LocalName -eq 'VisualElements' } | Select-Object -First 1 }",
+  "        $rel=$ve.Square44x44Logo; if(-not $rel){ $rel=$ve.Square150x150Logo }; if(-not $rel){ $rel=$x.Package.Properties.Logo }",
+  "        if($rel){",
+  "          $full=Join-Path $pkg.InstallLocation $rel",
+  "          if(Test-Path $full){ $logo=$full } else {",
+  "            $dir=Split-Path $full; $nm=[IO.Path]::GetFileNameWithoutExtension($full); $ext=[IO.Path]::GetExtension($full)",
+  "            $c=Get-ChildItem -Path $dir -Filter ($nm+'*'+$ext) | Sort-Object @{e={ if($_.Name -match 'targetsize-48|scale-200'){0}elseif($_.Name -match 'unplated'){2}else{1} }}, Length -Descending | Select-Object -First 1",
+  "            if($c){ $logo=$c.FullName }",
+  "          }",
+  "        }",
+  "      }",
+  "    }",
+  "  }",
+  "  [pscustomobject]@{Name=$a.Name;AppID=$a.AppID;Logo=$logo}",
+  "}",
+  "$out | ConvertTo-Json -Compress",
+].join('\n');
+
+function psEncoded(script, timeoutMs) {
+  const b64 = Buffer.from(script, 'utf16le').toString('base64');
+  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', b64], timeoutMs);
+}
+
+const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
 async function listApps() {
   if (appsCache && Date.now() - appsAt < 5 * 60000) return appsCache;
   let apps = [];
   if (isWin) {
-    const data = await psJson('Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress', 30000);
-    const rows = Array.isArray(data) ? data : data ? [data] : [];
+    let rows = [];
+    try { const d = JSON.parse((await psEncoded(START_APPS_PS, 60000)).trim()); rows = Array.isArray(d) ? d : d ? [d] : []; } catch (e) {}
+    if (!rows.length) {
+      const d = await psJson('Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress', 30000);
+      rows = Array.isArray(d) ? d : d ? [d] : [];
+    }
     const links = new Map();
     shortcutFolders().forEach((d) => findShortcuts(d, links));
+    const byNorm = new Map();
+    links.forEach((p, n) => byNorm.set(normName(n), p));
     const seen = new Set();
     for (const r of rows) {
       const name = String(r.Name || '').trim();
@@ -183,11 +275,19 @@ async function listApps() {
       if (!name || !id || SKIP.test(name) || seen.has(name.toLowerCase())) continue;
       if (/^https?:/i.test(id)) continue;
       seen.add(name.toLowerCase());
-      apps.push({ name, id, link: links.get(name.toLowerCase()) || null });
+      apps.push({ name, id, logo: r.Logo ? String(r.Logo) : null, link: links.get(name.toLowerCase()) || byNorm.get(normName(name)) || null });
     }
   }
   apps.sort((a, b) => a.name.localeCompare(b.name));
-  for (const a of apps) a.icon = a.link ? await iconFor(a.link) : null;
+  // Icon order: Store app logo, the program file itself, then its Start-menu shortcut.
+  for (const a of apps) {
+    let icon = null;
+    if (a.logo) icon = imageFile(a.logo);
+    if (!icon) { const exe = exeFromAppId(a.id); if (exe) icon = await iconFor(exe); }
+    if (!icon && a.link) icon = await iconFor(a.link);
+    a.icon = icon;
+    delete a.logo; delete a.link;
+  }
   appsCache = apps; appsAt = Date.now();
   return apps;
 }
@@ -251,15 +351,31 @@ function phoneShape(hwnd, aspect) {
   const h = wa.height;
   const w = Math.max(360, Math.round(h / a));
   const x = wa.x + Math.round((wa.width - w) / 2);
-  if (w32.IsIconic(hwnd)) w32.ShowWindow(hwnd, SW_RESTORE);
-  w32.SetWindowPos(hwnd, 0, Math.round(x * k), Math.round(wa.y * k), Math.round(w * k), Math.round(h * k), SWP_SHOWWINDOW);
+  // A maximized window ignores new sizes, so un-maximize it first.
+  if (w32.IsIconic(hwnd) || w32.IsZoomed(hwnd)) w32.ShowWindow(hwnd, SW_RESTORE);
+  const X = Math.round(x * k), Y = Math.round(wa.y * k), W = Math.round(w * k), H = Math.round(h * k);
+  w32.SetWindowPos(hwnd, 0, X, Y, W, H, SWP_SHOWWINDOW);
   bringToFront(hwnd);
+  // Some apps finish their own layout a moment later; set the size again.
+  setTimeout(() => { try { if (w32.IsZoomed(hwnd)) w32.ShowWindow(hwnd, SW_RESTORE); w32.SetWindowPos(hwnd, 0, X, Y, W, H, SWP_SHOWWINDOW); } catch (e) {} }, 700);
 }
 
 // Only steal focus when another window is in front (avoids stray Alt presses).
 function ensureFront(hwnd) {
   if (!w32 || !w32.IsWindow(hwnd)) return;
   if (Number(w32.GetForegroundWindow()) !== Number(hwnd)) bringToFront(hwnd);
+}
+
+// Where the window is on the PC screen, and how big the screen is, in real pixels.
+function windowRect(hwnd) {
+  const r = frameRect(hwnd);
+  if (!r) return null;
+  const d = screen.getPrimaryDisplay();
+  return Object.assign(r, {
+    sx: Math.round(d.bounds.x * d.scaleFactor), sy: Math.round(d.bounds.y * d.scaleFactor),
+    sw: Math.round(d.size.width * d.scaleFactor), sh: Math.round(d.size.height * d.scaleFactor),
+    minimized: !!(w32 && w32.IsIconic(hwnd)),
+  });
 }
 
 function closeWindow(hwnd) { if (w32 && w32.IsWindow(hwnd)) w32.PostMessageW(hwnd, WM_CLOSE, 0, 0); }
@@ -323,6 +439,6 @@ async function setBrightness(percent) {
 
 module.exports = {
   pcInfo, wallpaper, listApps, openWindows, openApp, openSettings, phoneShape, bringToFront, ensureFront,
-  closeWindow, frameRect, hwndOf, setVolume, toggleMute, setBrightness,
+  closeWindow, frameRect, windowRect, hwndOf, setVolume, toggleMute, setBrightness,
   volume: () => volumeGuess, SETTINGS,
 };
