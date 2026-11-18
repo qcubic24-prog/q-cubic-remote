@@ -94,17 +94,12 @@ function createTray() {
 app.whenReady().then(() => {
   config = loadConfig();
 
-  // The host window captures exactly what the phone asked for, without a picker:
-  // one app window (Q-OS app view) or the whole screen (classic remote desktop).
+  // The host window always captures the real PC screen, without a picker. For one app, the host
+  // window then cuts out just that app's area, so videos and modern apps show exactly as on the monitor.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-    const types = target && target.kind === 'window' ? ['window'] : ['screen'];
-    desktopCapturer.getSources({ types, thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
-      let src = null;
-      if (target && target.kind === 'window') src = sources.find((s) => s.id === target.sourceId);
-      if (!src) {
-        const primaryId = String(screen.getPrimaryDisplay().id);
-        src = sources.find((s) => s.display_id === primaryId) || sources[0];
-      }
+    desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } }).then((sources) => {
+      const primaryId = String(screen.getPrimaryDisplay().id);
+      const src = sources.find((s) => s.display_id === primaryId) || sources[0];
       callback(src ? { video: src } : {});
     }).catch(() => callback({}));
   });
@@ -114,9 +109,9 @@ app.whenReady().then(() => {
     args = args && typeof args === 'object' ? args : {};
     const useWindow = (src) => {
       if (!src) return { ok: false };
-      target = { kind: 'window', sourceId: src.id, hwnd: qos.hwndOf(src.id) };
+      target = { kind: 'window', sourceId: src.id, hwnd: qos.hwndOf(src.id, src.name) };
       qos.phoneShape(target.hwnd, args.aspect);
-      return { ok: true, source: src.id, name: src.name };
+      return { ok: true, source: src.id, name: src.name, crop: true };
     };
     switch (op) {
       case 'info': return qos.pcInfo();
@@ -129,6 +124,8 @@ app.whenReady().then(() => {
         const all = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
         return useWindow(all.find((s) => s.id === String(args.id || '')));
       }
+      case 'rect': return target && target.kind === 'window' ? qos.windowRect(target.hwnd) : null;
+      case 'front': if (target && target.kind === 'window') qos.ensureFront(target.hwnd); return { ok: true };
       case 'reshape': if (target && target.kind === 'window') qos.phoneShape(target.hwnd, args.aspect); return { ok: true };
       case 'closeWindow': {
         const hwnd = qos.hwndOf(String(args.id || (target && target.sourceId) || ''));
