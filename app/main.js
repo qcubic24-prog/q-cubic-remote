@@ -15,6 +15,7 @@ let tray = null;
 let quitting = false;
 // What the phone is looking at: null = nothing, 'screen' = the whole PC screen, or one app window.
 let target = null;     // { kind: 'screen' } | { kind: 'window', sourceId, hwnd }
+let lastHwnd = 0;      // the app window the phone showed last
 const startHidden = process.argv.includes('--hidden');
 
 if (!app.requestSingleInstanceLock()) {
@@ -109,8 +110,14 @@ app.whenReady().then(() => {
     args = args && typeof args === 'object' ? args : {};
     const useWindow = (src) => {
       if (!src) return { ok: false };
-      target = { kind: 'window', sourceId: src.id, hwnd: qos.hwndOf(src.id, src.name) };
-      qos.phoneShape(target.hwnd, args.aspect);
+      let hwnd = qos.hwndOf(src.id, src.name);
+      if (!qos.isWindow(hwnd)) hwnd = qos.foreground();
+      if (!qos.isWindow(hwnd)) return { ok: false };
+      // The app shown before goes to the background, so it cannot cover the new one.
+      if (lastHwnd && lastHwnd !== hwnd) qos.minimize(lastHwnd);
+      lastHwnd = hwnd;
+      target = { kind: 'window', sourceId: src.id, hwnd };
+      qos.phoneShape(hwnd, args.aspect);
       return { ok: true, source: src.id, name: src.name, crop: true };
     };
     switch (op) {
