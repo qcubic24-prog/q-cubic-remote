@@ -18,6 +18,7 @@ if (isWin) {
   const koffi = require('koffi');
   const user32 = koffi.load('user32.dll');
   const dwmapi = koffi.load('dwmapi.dll');
+  const kernel32 = koffi.load('kernel32.dll');
   const RECT = koffi.struct('QOS_RECT', { left: 'long', top: 'long', right: 'long', bottom: 'long' });
   w32 = {
     RECT_SIZE: koffi.sizeof(RECT),
@@ -31,6 +32,10 @@ if (isWin) {
     SetWindowPos: user32.func('int __stdcall SetWindowPos(intptr hWnd, intptr after, int X, int Y, int cx, int cy, uint32 flags)'),
     PostMessageW: user32.func('int __stdcall PostMessageW(intptr hWnd, uint32 msg, uintptr w, intptr l)'),
     GetWindowRect: user32.func('int __stdcall GetWindowRect(intptr hWnd, _Out_ QOS_RECT *rect)'),
+    GetWindowThreadProcessId: user32.func('uint32 __stdcall GetWindowThreadProcessId(intptr hWnd, intptr pid)'),
+    AttachThreadInput: user32.func('int __stdcall AttachThreadInput(uint32 a, uint32 b, int attach)'),
+    BringWindowToTop: user32.func('int __stdcall BringWindowToTop(intptr hWnd)'),
+    GetCurrentThreadId: kernel32.func('uint32 __stdcall GetCurrentThreadId()'),
     keybd_event: user32.func('void __stdcall keybd_event(uint8 vk, uint8 scan, uint32 flags, uintptr extra)'),
     DwmGetWindowAttribute: dwmapi.func('long __stdcall DwmGetWindowAttribute(intptr hWnd, uint32 attr, _Out_ QOS_RECT *value, uint32 size)'),
   };
@@ -334,13 +339,34 @@ function frameRect(hwnd) {
 function bringToFront(hwnd) {
   if (!w32 || !w32.IsWindow(hwnd)) return;
   if (w32.IsIconic(hwnd)) w32.ShowWindow(hwnd, SW_RESTORE);
-  // Windows only lets the active app change focus; a tap of Alt makes the request allowed.
-  w32.keybd_event(0x12, 0, 0, 0);
-  w32.keybd_event(0x12, 0, 2, 0);
-  w32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-  w32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-  w32.SetForegroundWindow(hwnd);
+  // Windows only lets the active app change focus. Joining the active app's input queue
+  // for a moment (plus a tap of Alt) makes the request allowed.
+  const fg = Number(w32.GetForegroundWindow());
+  const me = w32.GetCurrentThreadId();
+  const fgThread = fg ? w32.GetWindowThreadProcessId(fg, 0) : 0;
+  const attached = fgThread && fgThread !== me ? w32.AttachThreadInput(me, fgThread, 1) : 0;
+  try {
+    w32.keybd_event(0x12, 0, 0, 0);
+    w32.keybd_event(0x12, 0, 2, 0);
+    w32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    w32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    w32.BringWindowToTop(hwnd);
+    w32.SetForegroundWindow(hwnd);
+  } finally {
+    if (attached) w32.AttachThreadInput(me, fgThread, 0);
+  }
 }
+
+// Send an app to the background on the PC (like switching apps on a phone), so it cannot cover the next one.
+function minimize(hwnd) {
+  if (w32 && hwnd && w32.IsWindow(hwnd) && !w32.IsIconic(hwnd)) w32.ShowWindow(hwnd, 6 /* SW_MINIMIZE */);
+}
+
+// True when the handle is a real window right now.
+function isWindow(hwnd) { return !!(w32 && hwnd && w32.IsWindow(hwnd)); }
+
+// The window in front on the PC (used when a launched app's window cannot be matched by id).
+function foreground() { return w32 ? Number(w32.GetForegroundWindow()) : 0; }
 
 // aspect = phone height / width. The window is made as tall as the PC screen and as wide as the phone shape.
 function phoneShape(hwnd, aspect) {
@@ -438,7 +464,7 @@ async function setBrightness(percent) {
 }
 
 module.exports = {
-  pcInfo, wallpaper, listApps, openWindows, openApp, openSettings, phoneShape, bringToFront, ensureFront,
+  pcInfo, wallpaper, listApps, openWindows, openApp, openSettings, phoneShape, bringToFront, ensureFront, minimize, isWindow, foreground,
   closeWindow, frameRect, windowRect, hwndOf, setVolume, toggleMute, setBrightness,
   volume: () => volumeGuess, SETTINGS,
 };
