@@ -87,11 +87,12 @@ async function showTarget(s, crop) {
   if (session !== s) { stream.getTracks().forEach((t) => t.stop()); return false; }
   const old = s.stream, oldStop = s.stopCrop;
   s.stopCrop = null;
+  const gen = s.gen = (s.gen || 0) + 1;      // which "open" this picture belongs to
   const screenTrack = stream.getVideoTracks()[0];
   screenTrack.contentHint = 'detail';
   let track = screenTrack;
   if (crop && typeof MediaStreamTrackProcessor === 'function') {
-    const c = cropPipeline(s, screenTrack);
+    const c = cropPipeline(s, screenTrack, gen);
     track = c.track; s.stopCrop = c.stop;
   }
   s.stream = stream;
@@ -101,18 +102,19 @@ async function showTarget(s, crop) {
   if (oldStop) oldStop();
   if (old) old.getTracks().forEach((t) => t.stop());
   applyQuality(s.quality || 'balanced');
-  return true;
+  if (track === screenTrack) setTimeout(() => { if (session === s && s.gen === gen) reply(s, { t: 'ev', e: 'frame', g: gen }); }, 300);
+  return gen;
 }
 
 // Cut the app window's rectangle out of every screen frame (no copying of pixels).
-function cropPipeline(s, screenTrack) {
-  const st = { rect: null, alive: true, missing: 0 };
+function cropPipeline(s, screenTrack, gen) {
+  const st = { rect: null, alive: true, missing: 0, sent: false };
   const poll = async () => {
     if (!st.alive) return;
     try {
       const r = await window.qcr.qos('rect');
       if (r && r.width > 20 && r.height > 20 && !r.minimized) { st.rect = r; st.missing = 0; }
-      else if (++st.missing === 6 && session === s) reply(s, { t: 'ev', e: 'closed' });
+      else if (++st.missing === 8 && session === s && st.alive && s.gen === gen) reply(s, { t: 'ev', e: 'closed', g: gen });
     } catch (e) {}
     if (st.alive) setTimeout(poll, 400);
   };
@@ -135,7 +137,11 @@ function cropPipeline(s, screenTrack) {
       try { out = new VideoFrame(frame, { visibleRect: { x, y, width: w, height: h }, displayWidth: w, displayHeight: h }); }
       catch (e) { out = null; }
       frame.close();
-      if (out) ctl.enqueue(out);
+      if (out) {
+        ctl.enqueue(out);
+        // Tell the phone the new app's picture is on its way, so it never shows the old one.
+        if (!st.sent && st.alive && session === s && s.gen === gen) { st.sent = true; reply(s, { t: 'ev', e: 'frame', g: gen }); }
+      }
     },
   });
   processor.readable.pipeThrough(transformer).pipeTo(generator.writable).catch(() => {});
@@ -146,6 +152,7 @@ function cropPipeline(s, screenTrack) {
 }
 
 async function hideTarget(s) {
+  s.gen = (s.gen || 0) + 1;
   if (s.stopCrop) { s.stopCrop(); s.stopCrop = null; }
   if (s.stream) s.stream.getTracks().forEach((t) => t.stop());
   s.stream = null; s.track = null;
@@ -163,15 +170,25 @@ function reply(s, obj) {
 }
 
 const SHOW_OPS = new Set(['openApp', 'openSettings', 'openWindow', 'desktop']);
-async function onRequest(s, ev) {
+// Opening apps and going home run one after another, never mixed up.
+const ORDERED = new Set(['openApp', 'openSettings', 'openWindow', 'desktop', 'home', 'closeWindow']);
+let queue = Promise.resolve();
+function onRequest(s, ev) {
   const op = String(ev.op || '');
-  let data = null;
-  try {
-    data = await window.qcr.qos(op, ev.args || {});
-    if (SHOW_OPS.has(op) && data && data.ok) data.ok = await showTarget(s, !!data.crop);
-    if (op === 'home' || op === 'closeWindow') await hideTarget(s);
-  } catch (e) { data = { ok: false, error: e.message }; }
-  reply(s, { t: 'res', id: ev.id, data });
+  const work = async () => {
+    let data = null;
+    try {
+      data = await window.qcr.qos(op, ev.args || {});
+      if (SHOW_OPS.has(op) && data && data.ok) {
+        const gen = await showTarget(s, !!data.crop);
+        data.ok = !!gen; data.gen = gen || 0;
+      }
+      if (op === 'home' || op === 'closeWindow') await hideTarget(s);
+    } catch (e) { data = { ok: false, error: e.message }; }
+    reply(s, { t: 'res', id: ev.id, data });
+  };
+  if (ORDERED.has(op)) queue = queue.then(work, work);
+  else work();
 }
 
 async function startSession(sid, key, relay, hello, pairing) {
