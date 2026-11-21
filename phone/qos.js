@@ -54,7 +54,12 @@
       p.resolve(d.data);
       return;
     }
-    if (d.t === 'ev' && d.e === 'closed' && S.cur === 'qappv') {
+    if (d.t === 'ev' && d.e === 'frame') {
+      S.frameGen = Number(d.g) || 0;
+      if (S.onFrame) S.onFrame();
+      return;
+    }
+    if (d.t === 'ev' && d.e === 'closed' && S.cur === 'qappv' && (!d.g || Number(d.g) === S.gen)) {
       toast((S.appName || 'The app') + ' was closed on your PC');
       goStart();
     }
@@ -351,15 +356,32 @@
   function waiting(text) { $('qwaitText').textContent = text; $('qwait').style.display = 'flex'; video.style.visibility = 'hidden'; }
   function ready() { $('qwait').style.display = 'none'; video.style.visibility = 'visible'; V.s = 1; V.tx = 0; V.ty = 0; layoutVideo(); }
 
+  // Wait until the PC sends the picture of this exact app (never show the app opened before).
+  function waitFrame(gen, ms) {
+    return new Promise((resolve) => {
+      if (!gen || S.frameGen === gen) { resolve(true); return; }
+      const t = setTimeout(() => { S.onFrame = null; resolve(false); }, ms);
+      S.onFrame = () => { if (S.frameGen === gen) { clearTimeout(t); S.onFrame = null; resolve(true); } };
+    });
+  }
+
+  let openSeq = 0;
   async function showOnPhone(label, op, args) {
+    const my = ++openSeq;
     S.appName = label;
+    S.gen = -1;
     showScreen('qappv');
     waiting('Opening ' + label + ' on your PC...');
     let r = null;
-    try { r = await req(op, Object.assign({ aspect: aspect() }, args), 30000); } catch (e) {}
-    if (S.cur !== 'qappv') return;
+    try { r = await req(op, Object.assign({ aspect: aspect() }, args), 40000); } catch (e) {}
+    if (S.cur !== 'qappv' || my !== openSeq) return;
     if (!r || !r.ok) { toast('Could not open ' + label + ' on your PC'); back(); return; }
     if (r.name) S.appName = r.name;
+    S.gen = Number(r.gen) || 0;
+    waiting('Showing ' + S.appName + '...');
+    await waitFrame(S.gen, 8000);
+    if (S.cur !== 'qappv' || my !== openSeq) return;
+    try { video.play().catch(() => {}); } catch (e) {}
     ready();
   }
 
