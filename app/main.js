@@ -108,15 +108,16 @@ app.whenReady().then(() => {
   // Requests from the phone's Q-OS interface. Every request is checked here.
   ipcMain.handle('qos', async (_e, op, args) => {
     args = args && typeof args === 'object' ? args : {};
-    const useWindow = (src) => {
+    const useWindow = (found) => {
+      const src = found && found.src ? found.src : found;
+      const want = found && found.want ? found.want : (src ? { name: src.name, exe: null } : null);
       if (!src) return { ok: false };
-      let hwnd = qos.hwndOf(src.id, src.name);
-      if (!qos.isWindow(hwnd)) hwnd = qos.foreground();
+      const hwnd = qos.hwndOf(src.id, src.name);
       if (!qos.isWindow(hwnd)) return { ok: false };
       // The app shown before goes to the background, so it cannot cover the new one.
       if (lastHwnd && lastHwnd !== hwnd) qos.minimize(lastHwnd);
       lastHwnd = hwnd;
-      target = { kind: 'window', sourceId: src.id, hwnd };
+      target = { kind: 'window', sourceId: src.id, hwnd, want, aspect: args.aspect };
       qos.phoneShape(hwnd, args.aspect);
       return { ok: true, source: src.id, name: src.name, crop: true };
     };
@@ -131,9 +132,22 @@ app.whenReady().then(() => {
         const all = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
         return useWindow(all.find((s) => s.id === String(args.id || '')));
       }
-      case 'rect': return target && target.kind === 'window' ? qos.windowRect(target.hwnd) : null;
+      case 'rect': {
+        if (!target || target.kind !== 'window') return null;
+        const t = target;
+        if (!qos.isWindow(t.hwnd)) {
+          // The window went away (a splash screen, or the app opened its real window). Follow the app.
+          const again = t.want ? await qos.findWindow(t.want) : null;
+          if (target !== t) return null;
+          if (!again) return null;
+          t.hwnd = qos.hwndOf(again.id, again.name); t.sourceId = again.id; lastHwnd = t.hwnd;
+          qos.phoneShape(t.hwnd, t.aspect);
+        }
+        qos.keepFront(t.hwnd);
+        return qos.windowRect(t.hwnd);
+      }
       case 'front': if (target && target.kind === 'window') qos.ensureFront(target.hwnd); return { ok: true };
-      case 'reshape': if (target && target.kind === 'window') qos.phoneShape(target.hwnd, args.aspect); return { ok: true };
+      case 'reshape': if (target && target.kind === 'window') { target.aspect = args.aspect; qos.phoneShape(target.hwnd, args.aspect); } return { ok: true };
       case 'closeWindow': {
         const hwnd = qos.hwndOf(String(args.id || (target && target.sourceId) || ''));
         if (hwnd) qos.closeWindow(hwnd);
