@@ -36,6 +36,12 @@ if (isWin) {
     AttachThreadInput: user32.func('int __stdcall AttachThreadInput(uint32 a, uint32 b, int attach)'),
     BringWindowToTop: user32.func('int __stdcall BringWindowToTop(intptr hWnd)'),
     GetCurrentThreadId: kernel32.func('uint32 __stdcall GetCurrentThreadId()'),
+    GetWindowPid: user32.func('uint32 __stdcall GetWindowThreadProcessId(intptr hWnd, _Out_ uint32 *pid)'),
+    GetWindow: user32.func('intptr __stdcall GetWindow(intptr hWnd, uint32 cmd)'),
+    IsWindowVisible: user32.func('int __stdcall IsWindowVisible(intptr hWnd)'),
+    OpenProcess: kernel32.func('intptr __stdcall OpenProcess(uint32 access, int inherit, uint32 pid)'),
+    QueryFullProcessImageNameW: kernel32.func('int __stdcall QueryFullProcessImageNameW(intptr h, uint32 flags, void *buf, _Inout_ uint32 *size)'),
+    CloseHandle: kernel32.func('int __stdcall CloseHandle(intptr h)'),
     keybd_event: user32.func('void __stdcall keybd_event(uint8 vk, uint8 scan, uint32 flags, uintptr extra)'),
     DwmGetWindowAttribute: dwmapi.func('long __stdcall DwmGetWindowAttribute(intptr hWnd, uint32 attr, _Out_ QOS_RECT *value, uint32 size)'),
   };
@@ -257,6 +263,17 @@ function psEncoded(script, timeoutMs) {
   return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', b64], timeoutMs);
 }
 
+// The program file an app runs as (so its window can be recognised on screen).
+const appExe = new Map();
+function programOf(id, link) {
+  let exe = exeFromAppId(id);
+  if (!exe && link && /\.lnk$/i.test(link)) {
+    try { const t = shell.readShortcutLink(link).target; if (t && /\.exe$/i.test(t) && fs.existsSync(t)) exe = t; } catch (e) {}
+  }
+  if (exe && !/\.exe$/i.test(exe)) exe = null;
+  return exe ? exe.toLowerCase() : null;
+}
+
 const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 async function listApps() {
@@ -281,6 +298,7 @@ async function listApps() {
       if (/^https?:/i.test(id)) continue;
       seen.add(name.toLowerCase());
       apps.push({ name, id, logo: r.Logo ? String(r.Logo) : null, link: links.get(name.toLowerCase()) || byNorm.get(normName(name)) || null });
+      appExe.set(id, programOf(id, apps[apps.length - 1].link));
     }
   }
   apps.sort((a, b) => a.name.localeCompare(b.name));
@@ -368,6 +386,32 @@ function isWindow(hwnd) { return !!(w32 && hwnd && w32.IsWindow(hwnd)); }
 // The window in front on the PC (used when a launched app's window cannot be matched by id).
 function foreground() { return w32 ? Number(w32.GetForegroundWindow()) : 0; }
 
+// Which program (process) a window belongs to.
+function pidOf(hwnd) {
+  if (!w32 || !hwnd) return 0;
+  try { const out = [0]; w32.GetWindowPid(hwnd, out); return out[0] || 0; } catch (e) { return 0; }
+}
+const exeCache = new Map();
+function exeOf(hwnd) {
+  const pid = pidOf(hwnd);
+  if (!pid) return '';
+  if (exeCache.has(pid)) return exeCache.get(pid);
+  let p = '';
+  try {
+    const h = w32.OpenProcess(0x1000, 0, pid);          // PROCESS_QUERY_LIMITED_INFORMATION
+    if (h) {
+      const buf = Buffer.alloc(2080), size = [1040];
+      if (w32.QueryFullProcessImageNameW(h, 0, buf, size)) p = buf.toString('utf16le', 0, size[0] * 2);
+      w32.CloseHandle(h);
+    }
+  } catch (e) {}
+  p = p.toLowerCase();
+  if (exeCache.size > 400) exeCache.clear();
+  exeCache.set(pid, p);
+  return p;
+}
+
+
 // aspect = phone height / width. The window is made as tall as the PC screen and as wide as the phone shape.
 function phoneShape(hwnd, aspect) {
   if (!w32 || !w32.IsWindow(hwnd)) return;
@@ -406,43 +450,95 @@ function windowRect(hwnd) {
 
 function closeWindow(hwnd) { if (w32 && w32.IsWindow(hwnd)) w32.PostMessageW(hwnd, WM_CLOSE, 0, 0); }
 
-// Launch something, then find the window it opened.
-async function launchAndFind(start, nameHint) {
+// How well a window on screen matches the app the phone asked for.
+// The program file is the surest sign; the title, a brand-new window, or the window
+// that just came to the front help when the program file is not known (Store apps).
+function scoreWindow(s, want, before, fgBefore, fg) {
+  const h = hwndOf(s.id);
+  if (!w32 || !h || !w32.IsWindow(h)) return 0;
+  if (w32.GetWindow(h, 4)) return 0;                   // a dialog owned by another window
+  if (pidOf(h) === process.pid) return 0;             // Q-CUBIC itself
+  const icon = !!w32.IsIconic(h);
+  const r = frameRect(h);
+  if (!icon && !(r && r.width >= 200 && r.height >= 150)) return 0;   // tooltips, splash bits
+  let sc = 0;
+  if (want.exe && exeOf(h) === want.exe) sc += 6;
+  const t = normName(s.name), n = normName(want.name);
+  if (n && t) {
+    if (t === n) sc += 4;
+    else if (t.includes(n)) sc += 3;
+    else if (n.length > 4 && t.length > 4 && n.includes(t)) sc += 2;
+  }
+  if (before && !before.has(s.id)) sc += 2;
+  if (fg && h === fg && fg !== fgBefore) sc += 2;
+  return sc;
+}
+
+function bestWindow(list, want, before, fgBefore) {
+  const fg = foreground();
+  let pick = null, top = 0;
+  for (const s of list) {
+    const sc = scoreWindow(s, want, before, fgBefore, fg);
+    if (sc > top) { top = sc; pick = s; }
+  }
+  return { pick, top };
+}
+
+// Launch something, then find the window that belongs to it.
+async function launchAndFind(start, want) {
   const before = new Set((await windowSources(false)).map((s) => s.id));
-  const fgBefore = w32 ? Number(w32.GetForegroundWindow()) : 0;
+  const fgBefore = foreground();
   await start();
-  const hint = String(nameHint || '').toLowerCase();
-  for (let i = 0; i < 40; i++) {
-    await sleep(250);
-    const list = await windowSources(false);
-    const fresh = list.find((s) => !before.has(s.id));
-    if (fresh) return fresh;
-    if (hint && i >= 4) {
-      const named = list.find((s) => s.name.toLowerCase().includes(hint));
-      if (named) return named;
-    }
-    if (w32 && i >= 6) {
-      const fg = Number(w32.GetForegroundWindow());
-      if (fg && fg !== fgBefore) {
-        const match = list.find((s) => hwndOf(s.id) === fg);
-        if (match) return match;
-      }
-    }
+  const t0 = Date.now();
+  let last = null, same = 0;
+  while (Date.now() - t0 < 15000) {
+    await sleep(300);
+    const { pick, top } = bestWindow(await windowSources(false), want, before, fgBefore);
+    if (!pick) { last = null; same = 0; continue; }
+    same = last === pick.id ? same + 1 : 1;
+    last = pick.id;
+    if (top >= 6) return pick;                                   // its own program file
+    if (top >= 3 && same >= 2) return pick;                      // name / new + front, seen twice
+    if (top >= 2 && same >= 4 && Date.now() - t0 > 4000) return pick;   // only "new", stayed open
   }
   return null;
+}
+
+// Find the app's window again without launching (its first window closed, e.g. a splash screen).
+async function findWindow(want) {
+  const { pick, top } = bestWindow(await windowSources(false), want, null, 0);
+  return top >= 3 ? pick : null;
+}
+
+// Keep the phone's app in front of other programs on the PC (at most every 1.5 s).
+let frontAt = 0;
+function keepFront(hwnd) {
+  if (!w32 || !w32.IsWindow(hwnd) || w32.IsIconic(hwnd)) return;
+  const fg = foreground();
+  if (!fg || fg === Number(hwnd)) return;
+  const pfg = pidOf(fg);
+  if (pfg && pfg === pidOf(hwnd) && pfg !== process.pid) return;   // the app's own dialog or menu
+  if (Number(w32.GetWindow(fg, 4)) === Number(hwnd)) return;
+  if (Date.now() - frontAt < 1500) return;
+  frontAt = Date.now();
+  bringToFront(hwnd);
 }
 
 async function openApp(id) {
   const apps = await listApps();
   const a = apps.find((x) => x.id === id);
   if (!a) return null;                       // only apps that really are on this PC
-  return launchAndFind(() => run('explorer.exe', ['shell:AppsFolder\\' + a.id], 3000), a.name);
+  const want = { name: a.name, exe: appExe.get(a.id) || null };
+  const s = await launchAndFind(() => run('explorer.exe', ['shell:AppsFolder\\' + a.id], 3000), want);
+  return s ? { src: s, want } : null;
 }
 
 async function openSettings(page) {
   const uri = SETTINGS[page];
   if (!uri) return null;
-  return launchAndFind(() => shell.openExternal(uri), 'settings');
+  const want = { name: 'Settings', exe: null };
+  const s = await launchAndFind(() => shell.openExternal(uri), want);
+  return s ? { src: s, want } : null;
 }
 
 // ---------- volume and brightness ----------
@@ -464,7 +560,7 @@ async function setBrightness(percent) {
 }
 
 module.exports = {
-  pcInfo, wallpaper, listApps, openWindows, openApp, openSettings, phoneShape, bringToFront, ensureFront, minimize, isWindow, foreground,
+  pcInfo, wallpaper, listApps, openWindows, openApp, openSettings, phoneShape, bringToFront, ensureFront, minimize, isWindow, foreground, findWindow, keepFront,
   closeWindow, frameRect, windowRect, hwndOf, setVolume, toggleMute, setBrightness,
   volume: () => volumeGuess, SETTINGS,
 };
