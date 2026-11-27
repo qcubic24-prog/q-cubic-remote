@@ -124,3 +124,4 @@
 #qrec .none { margin: 30px 18px; opacity: .8; }
 
 #qtoast { position: absolute; left: 50%; bottom: 66px; transform: translateX(-50%); z-index: 50; background: rgba(30,30,30,.95); color: #fff; padding: 9px 16px; border-radius: 4px; font-size: 14px; display: none; max-width: 90%; text-align: center; }
+#qnav button.on { background: rgba(255,255,255,.16); }
