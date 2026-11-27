@@ -89,7 +89,7 @@ async function connect(target, msgEl) {
     if (msg.type !== 'offer' || answered) return;
     answered = true;
     msgEl.textContent = 'Connecting to ' + (msg.hostName || 'your PC') + '...';
-    try { await answer(msg.sdp, relay, tp, sid, key, kid, target, msgEl); }
+    try { await answer(msg.sdp, relay, tp, sid, key, kid, target, msgEl, msg.ice); }
     catch (e) { fail(msgEl, 'Connection error: ' + e.message); }
   };
 
@@ -122,9 +122,25 @@ function phoneName() {
 
 function fail(msgEl, text) { msgEl.style.color = '#FCA5A5'; msgEl.textContent = text; }
 
-async function answer(sdp, relay, tp, sid, key, kid, target, msgEl) {
-  if (pc) { try { pc.close(); } catch (e) {} }
-  pc = new RTCPeerConnection({ iceServers: N.ICE_SERVERS });
+// When the link drops (Wi-Fi <-> mobile data, a tunnel, a weak signal), connect again by itself.
+let again = { target: null, tries: 0, timer: null };
+function reconnect(msgEl) {
+  const t = again.target;
+  clearTimeout(again.timer);
+  if (!t || again.tries >= 4) { again.target = null; return false; }
+  again.tries++;
+  toast('Reconnecting to your PC...');
+  again.timer = setTimeout(() => connect(t, msgEl), 1500);
+  return true;
+}
+
+async function answer(sdp, relay, tp, sid, key, kid, target, msgEl, ice) {
+  if (pc) { const old = pc; pc = null; try { old.close(); } catch (e) {} }
+  // The PC sends its TURN relay (inside the encrypted message) so mobile data works too.
+  const extra = Array.isArray(ice) ? ice.filter((x) => x && x.urls) : [];
+  pc = new RTCPeerConnection({ iceServers: N.ICE_SERVERS.concat(extra) });
+  const myPc = pc;
+  let dropTimer = null;
   pc.ontrack = (e) => {
     const stream = e.streams[0] || new MediaStream([e.track]);
     $('video').srcObject = stream;
@@ -146,11 +162,26 @@ async function answer(sdp, relay, tp, sid, key, kid, target, msgEl) {
     };
   };
   pc.onconnectionstatechange = () => {
-    if (!pc) return;
+    if (pc !== myPc) return;
     const s = pc.connectionState;
-    if (s === 'connected') { closeRelays(); msgEl.textContent = ''; show('none'); window.QOS.enter(target); }
-    if (s === 'failed') { endView(); fail(msgEl, 'Could not reach your PC on this network. Try Wi-Fi or mobile data instead.'); show(pairingPage(target)); }
-    if (s === 'disconnected') toast('Connection unstable...');
+    if (s === 'connected') {
+      clearTimeout(dropTimer);
+      closeRelays(); msgEl.textContent = '';
+      const resumed = again.target && again.tries > 0;
+      again = { target: target.secret ? target : null, tries: 0, timer: null };
+      if (resumed && window.QOS.resume && window.QOS.resume()) { show('none'); toast('Reconnected'); }
+      else { show('none'); window.QOS.enter(target); }
+    }
+    if (s === 'disconnected') {
+      toast('Connection unstable...');
+      clearTimeout(dropTimer);
+      dropTimer = setTimeout(() => { if (pc === myPc && pc.connectionState !== 'connected') { pc.onconnectionstatechange = null; try { pc.close(); } catch (e) {} pc = null; if (!reconnect(msgEl)) { endView(); show(pairingPage(target)); } } }, 6000);
+    }
+    if (s === 'failed') {
+      clearTimeout(dropTimer);
+      if (reconnect(msgEl)) return;
+      endView(); fail(msgEl, 'Could not reach your PC. Check that the PC is on and online, then tap Connect.'); show(pairingPage(target));
+    }
   };
   await pc.setRemoteDescription({ type: 'offer', sdp });
   lowLatency();
