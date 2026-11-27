@@ -43,6 +43,38 @@ function saveConfig(cfg) {
 
 let config = null;
 
+// ---------- reaching the phone on any network ----------
+// Most networks let the phone and PC talk directly. Mobile data, offices and hotels often
+// do not; then the video goes through a TURN relay. Q-CUBIC's built-in relay link is set
+// at build time; a link pasted in the PC window (Metered "TURN credentials" URL) wins.
+const BUILTIN_TURN = '';
+let turnCache = { at: 0, list: [] };
+async function turnServers() {
+  const link = String((config && config.turnLink) || BUILTIN_TURN || '').trim();
+  if (!/^https:\/\//i.test(link)) return [];
+  if (Date.now() - turnCache.at < 10 * 60000 && turnCache.link === link) return turnCache.list;
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 6000);
+    const r = await fetch(link, { signal: ctl.signal, cache: 'no-store' });
+    clearTimeout(t);
+    const j = await r.json();
+    const arr = (Array.isArray(j) ? j : (j && j.iceServers) || []).filter((x) => x && x.urls)
+      .map((x) => ({ urls: x.urls, username: x.username, credential: x.credential }));
+    turnCache = { at: Date.now(), link, list: arr };
+    return arr;
+  } catch (e) {
+    return turnCache.link === link ? turnCache.list : [];
+  }
+}
+
+// Keep the screen awake while a phone is connected (a sleeping screen sends no picture).
+let awakeId = null;
+function setAwake(on) {
+  if (on && awakeId === null) awakeId = powerSaveBlocker.start('prevent-display-sleep');
+  if (!on && awakeId !== null) { try { powerSaveBlocker.stop(awakeId); } catch (e) {} awakeId = null; }
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 460,
@@ -177,6 +209,16 @@ app.whenReady().then(() => {
     saveConfig(config);
     return true;
   });
+  ipcMain.handle('turn', () => turnServers());
+  ipcMain.handle('turn-link', (_e, link) => {
+    if (typeof link === 'string') {
+      link = link.trim();
+      if (link && !/^https:\/\//i.test(link)) return { ok: false };
+      config.turnLink = link; saveConfig(config); turnCache = { at: 0, list: [] };
+    }
+    return { ok: true, link: config.turnLink || '', builtin: !!BUILTIN_TURN };
+  });
+  ipcMain.on('awake', (_e, on) => setAwake(!!on));
   ipcMain.handle('clear-trusted', () => { config.trusted = []; saveConfig(config); return true; });
   ipcMain.on('log', (_e, text) => { if (process.env.QCR_DEBUG) console.log('[host]', text); });
   ipcMain.on('input', (_e, ev) => {
