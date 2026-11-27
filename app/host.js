@@ -43,6 +43,7 @@ function stopSession() {
   try { session.pc.close(); } catch (e) {}
   if (session.stream) session.stream.getTracks().forEach((t) => t.stop());
   session = null;
+  window.qcr.awake(false);
 }
 
 async function applyQuality(name) {
@@ -197,7 +198,12 @@ async function startSession(sid, key, relay, hello, pairing) {
   session = s;
   setStatus('Phone found. Connecting...', true);
 
-  const pc = new RTCPeerConnection({ iceServers: N.ICE_SERVERS });
+  // Direct when the networks allow it, through the TURN relay when they do not.
+  let turn = [];
+  try { turn = (await window.qcr.turn()) || []; } catch (e) {}
+  if (session !== s) return;
+  const ice = N.ICE_SERVERS.concat(turn);
+  const pc = new RTCPeerConnection({ iceServers: ice });
   s.pc = pc;
   // The video starts empty; the phone chooses an app (or the whole screen) after connecting.
   const tr = pc.addTransceiver('video', { direction: 'sendonly' });
@@ -226,7 +232,8 @@ async function startSession(sid, key, relay, hello, pairing) {
   pc.onconnectionstatechange = () => {
     if (session !== s) return;
     const st = pc.connectionState;
-    if (st === 'connected') { setStatus('Connected to ' + s.phoneName + '.', true); applyQuality(s.quality || 'balanced'); }
+    if (st === 'connected') { setStatus('Connected to ' + s.phoneName + '.', true); applyQuality(s.quality || 'balanced'); window.qcr.awake(true); }
+    if (st !== 'connected' && st !== 'connecting') window.qcr.awake(false);
     if (st === 'failed' || st === 'closed') window.qcr.qos('home');
     if (st === 'failed') { setStatus('Could not connect to the phone on this network.', false); stopSession(); }
     if (st === 'disconnected' || st === 'closed') { setStatus('Phone disconnected. Waiting...', false); }
@@ -234,7 +241,7 @@ async function startSession(sid, key, relay, hello, pairing) {
 
   await pc.setLocalDescription(await pc.createOffer());
   await N.waitForIce(pc, 3000);
-  await send(relay, sid, key, { type: 'offer', sdp: pc.localDescription.sdp, pairing, hostName: info.hostName });
+  await send(relay, sid, key, { type: 'offer', sdp: pc.localDescription.sdp, pairing, hostName: info.hostName, ice: turn });
   log('offer sent to ' + sid);
 }
 
@@ -317,6 +324,21 @@ function updateRelayText() {
   await loadTrusted(info.trusted);
   await newCode();
   $('newCode').onclick = () => newCode();
+  // Relay for mobile data / strict networks
+  const showTurn = (r) => {
+    $('turnLink').value = (r && r.link) || '';
+    $('turnState').textContent = r && r.link ? 'Your relay link is saved. Mobile data will work.'
+      : r && r.builtin ? 'Using the Q-CUBIC relay. Mobile data will work.'
+      : 'No relay yet: home Wi-Fi to most networks works, some mobile data may not.';
+  };
+  showTurn(await window.qcr.turnLink());
+  $('turnSave').onclick = async () => {
+    const r = await window.qcr.turnLink($('turnLink').value);
+    if (!r.ok) { $('turnState').textContent = 'That is not a link. It should start with https://'; return; }
+    const list = await window.qcr.turn();
+    showTurn(r);
+    if (r.link && !list.length) $('turnState').textContent = 'Saved, but the relay did not answer. Check the link.';
+  };
   $('clearPhones').onclick = async () => { await window.qcr.clearTrusted(); await loadTrusted([]); stopSession(); };
   setInterval(() => { if (Date.now() > codeExpires) newCode(); updateRelayText(); }, 15000);
   for (const url of (info.brokers || N.BROKERS)) relayLoop(url);
