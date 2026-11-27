@@ -110,6 +110,7 @@
     recent: 'M4 6h10v12H4zM17 8h3v8h-3',
     folder: 'M3 6h6l2 2h10v11H3z',
     search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20 20l-4-4',
+    tabs: 'M8 3h13v13H8zM4 7v14h13',
     keyboard: 'M2 6h20v12H2zM6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10',
     chev: 'M9 6l6 6-6 6',
   };
@@ -140,20 +141,21 @@
     S.cur = name;
     $('qsb').style.display = name === 'qlock' ? 'none' : 'flex';
     $('qnav').style.display = name === 'qlock' ? 'none' : 'flex';
-    const third = $('qnThird');
-    third.replaceChildren(svg(name === 'qappv' ? IC.keyboard : IC.search));
-    third.setAttribute('aria-label', name === 'qappv' ? 'Keyboard' : 'Search apps');
+    // The keyboard button only appears while a PC app is open.
+    $('qnKb').style.display = name === 'qappv' ? 'flex' : 'none';
+    $('qnThird').classList.toggle('on', name === 'qrec');
     closeAc();
   }
 
+  // Tell the PC to stop showing the app (called after leaving the app screen or All tabs).
   async function leaveAppView() {
-    if (S.cur === 'qappv' || S.cur === 'qrec') { try { await req('home', {}, 8000); } catch (e) {} }
+    try { await req('home', {}, 8000); } catch (e) {}
   }
 
   async function back() {
     if ($('qac').classList.contains('open')) { closeAc(); return; }
     if (S.cur === 'qstart' || S.cur === 'qlock') { toast('You are on Start'); return; }
-    const wasApp = S.cur === 'qappv';
+    const wasApp = S.cur === 'qappv' || S.cur === 'qrec';
     let prev = S.stack.pop() || 'qstart';
     while (prev === 'qappv' || prev === 'qrec') prev = S.stack.pop() || 'qstart';
     showScreen(prev, false);
@@ -161,7 +163,7 @@
   }
 
   function goStart() {
-    const wasApp = S.cur === 'qappv';
+    const wasApp = S.cur === 'qappv' || S.cur === 'qrec';
     S.stack = [];
     showScreen('qstart', false);
     if (wasApp) leaveAppView();
@@ -624,10 +626,9 @@
     b.addEventListener('click', () => { if (!held) back(); });
     b.addEventListener('contextmenu', (e) => e.preventDefault());
     $('qnStart').onclick = () => goStart();
-    $('qnThird').onclick = () => {
-      if (S.cur === 'qappv') { resetKb(); kb.focus(); return; }
-      showScreen('qapps'); renderApps(); $('qsearch').focus();
-    };
+    // All tabs: every app window open on the PC, from any screen.
+    $('qnThird').onclick = () => openRecents();
+    $('qnKb').onclick = () => { if (S.cur === 'qappv') { resetKb(); kb.focus(); } };
     $('qallBtn').onclick = () => { showScreen('qapps'); renderApps(); };
     $('qsearch').addEventListener('input', renderApps);
     root.querySelector('.pcard .rn').onclick = () => openSettingsPage('about', 'About');
@@ -672,7 +673,17 @@
     closeAc();
   }
 
-  window.QOS = { enter, leave, onMessage, fromDesktop };
+  // Back after a short drop: keep the user where they were, except inside an app (the PC
+  // started fresh, so its app view has to be opened again).
+  function resume() {
+    if (!root.classList.contains('on')) return false;
+    pending.forEach((p) => { clearTimeout(p.timer); p.resolve(null); }); pending.clear();
+    if (S.cur === 'qappv' || S.cur === 'qrec') { S.stack = []; showScreen('qstart', false); }
+    refreshInfo();
+    return true;
+  }
+
+  window.QOS = { enter, leave, onMessage, fromDesktop, resume };
 
   // ---------- demo data, only when testing this page on the computer that serves it ----------
   const Demo = {
