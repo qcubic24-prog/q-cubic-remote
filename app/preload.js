@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('qcr', {
   addTrusted: (t) => ipcRenderer.invoke('add-trusted', t),
   clearTrusted: () => ipcRenderer.invoke('clear-trusted'),
   qos: (op, args) => ipcRenderer.invoke('qos', op, args),
+  turn: () => ipcRenderer.invoke('turn'),
+  turnLink: (link) => ipcRenderer.invoke('turn-link', link),
+  awake: (on) => ipcRenderer.send('awake', !!on),
   sendInput: (ev) => ipcRenderer.send('input', ev),
   log: (text) => ipcRenderer.send('log', String(text)),
 });
