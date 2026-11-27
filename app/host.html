@@ -38,6 +38,11 @@
     <div id="phones">None yet</div>
   </div>
   <div class="box">
+    <div class="label">Relay for mobile data (optional)</div>
+    <div class="row" style="gap:8px"><input id="turnLink" placeholder="https://....metered.live/api/v1/turn/credentials?apiKey=..." style="flex:1;min-height:34px;border-radius:10px;border:1px solid #33415C;background:#0E1626;color:#EAF2FF;padding:0 10px;font-size:13px"><button id="turnSave">Save</button></div>
+    <small id="turnState"></small>
+  </div>
+  <div class="box">
     <div class="label">Status</div>
     <div><span class="dot" id="dot"></span><span id="status">Starting...</span></div>
     <small id="relay">Connecting to the internet relay...</small>
